@@ -39,8 +39,17 @@ def bind_widget_tree(widget, event, callback):
 # =============================================================================
 
 class InfoCard(ctk.CTkFrame):
+    # Márka ikonok emoji alapon
+    BRAND_ICONS = {
+        "Audi": "🔵", "BMW": "🔵", "Mercedes": "⭐", "Volkswagen": "🟡",
+        "Opel": "⚡", "Ford": "🔵", "Toyota": "🔴", "Honda": "🔴",
+        "Suzuki": "🟣", "Skoda": "🟢", "Seat": "🟠", "Renault": "🟡",
+        "Peugeot": "🦁", "Citroen": "🟣", "Fiat": "🔴", "Hyundai": "🔵",
+        "Kia": "🔴", "Mazda": "🔴", "Nissan": "🔴", "Volvo": "🔵",
+    }
+
     def __init__(self, parent, car_data, select_cb, edit_cb, delete_cb, active=False):
-        cid, marka, tipus, ev, km, vin, rsz, muszaki, intervallum = car_data
+        cid, marka, tipus, ev, km, vin, rsz, muszaki, intervallum, ikon = car_data
         mode = ctk.get_appearance_mode()
         is_dark = mode == "Dark"
 
@@ -52,12 +61,15 @@ class InfoCard(ctk.CTkFrame):
             border = "#e2e8f0" if not active else "#3b82f6"
 
         super().__init__(parent, fg_color=bg, corner_radius=15,
-                         border_width=2, border_color=border, width=220, height=145)
+                         border_width=2, border_color=border, width=220, height=155)
         self.pack_propagate(False)
         bind_widget_tree(self, "<Button-1>", lambda e: select_cb(cid))
 
-        ctk.CTkLabel(self, text=f"{marka} {tipus}", font=("Arial", 14, "bold")).pack(pady=(10, 0))
-        ctk.CTkLabel(self, text=rsz if rsz else "---", font=("Arial", 12), text_color="gray").pack()
+        # Ikon megjelenítése
+        display_ikon = ikon if ikon else self.BRAND_ICONS.get(marka, "🚗")
+        ctk.CTkLabel(self, text=display_ikon, font=("Arial", 28)).pack(pady=(8, 0))
+        ctk.CTkLabel(self, text=f"{marka} {tipus}", font=("Arial", 13, "bold")).pack(pady=(2, 0))
+        ctk.CTkLabel(self, text=rsz if rsz else "---", font=("Arial", 11), text_color="gray").pack()
         km_str = f"{km:,} km".replace(",", " ") if km else "--- km"
         ctk.CTkLabel(self, text=km_str, font=("Arial", 11), text_color="#3b82f6").pack()
 
@@ -690,7 +702,7 @@ class CategoryManagerPanel(ctk.CTkToplevel):
         add_frame = ctk.CTkFrame(self, fg_color="transparent")
         add_frame.pack(fill="x", padx=20, pady=5)
 
-        self.new_nev = ctk.CTkEntry(add_frame, placeholder_text="Név (pl. Biztosítás)", width=150)
+        self.new_nev = ctk.CTkEntry(add_frame, placeholder_text="Név (pl. Parkolás)", width=150)
         self.new_nev.pack(side="left", padx=(0, 5))
 
         self.new_ikon_var = ctk.StringVar(value="📋")

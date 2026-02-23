@@ -108,3 +108,10 @@ def _migrate_db(cursor, conn):
         logger.info("Migráció: kep_utvonal oszlop hozzáadása...")
         cursor.execute("ALTER TABLE szerviz_adatok ADD COLUMN kep_utvonal TEXT DEFAULT ''")
         conn.commit()
+
+    try:
+        cursor.execute("SELECT ikon FROM autok LIMIT 1")
+    except sqlite3.OperationalError:
+        logger.info("Migráció: ikon oszlop hozzáadása az autok táblához...")
+        cursor.execute("ALTER TABLE autok ADD COLUMN ikon TEXT DEFAULT '🚗'")
+        conn.commit()

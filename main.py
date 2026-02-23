@@ -415,7 +415,7 @@ class WheelBooK(ctk.CTk):
 
         with get_db() as conn:
             cars = conn.execute(
-                "SELECT id, marka, tipus, evjarat, km_allas, vin, rendszam, muszaki_lejarat, olaj_intervallum FROM autok"
+                "SELECT id, marka, tipus, evjarat, km_allas, vin, rendszam, muszaki_lejarat, olaj_intervallum, COALESCE(ikon,'🚗') FROM autok"
             ).fetchall()
 
         if not self.selected_car_id and cars:
@@ -980,34 +980,65 @@ class WheelBooK(ctk.CTk):
     # =========================================================================
 
     def open_car_popup(self, cid=None):
+        # Ikon választó opciók
+        IKON_LISTA = [
+            "🚗", "🚙", "🏎️", "🚕", "🚐", "🚌", "🚑", "🚒",
+            "🛻", "🚚", "🏍️", "🛵", "⚡", "🔋",
+        ]
+
         pop = ctk.CTkToplevel(self)
         pop.title("Jármű szerkesztése" if cid else "Új jármű")
-        pop.geometry("400x650")
+        pop.geometry("420x700")
         pop.attributes("-topmost", True)
         pop.grab_set()
 
-        keys = ["marka", "tipus", "rendszam", "evjarat", "km_allas", "muszaki_lejarat", "olaj_intervallum"]
+        keys   = ["marka", "tipus", "rendszam", "evjarat", "km_allas",
+                  "muszaki_lejarat", "olaj_intervallum"]
         labels = ["Márka", "Típus", "Rendszám", "Évjárat", "Aktuális KM",
                   "Műszaki lejárata (ÉÉÉÉ.HH.NN)", "Olajcsere periódus (km)"]
         entries = {}
 
         for i, k in enumerate(keys):
             ctk.CTkLabel(pop, text=labels[i]).pack()
-            e = ctk.CTkEntry(pop, width=250)
-            e.pack()
+            e = ctk.CTkEntry(pop, width=280)
+            e.pack(pady=(0, 3))
             entries[k] = e
+
+        # Ikon választó
+        ctk.CTkLabel(pop, text="Jármű ikon").pack(pady=(8, 2))
+        ikon_var = ctk.StringVar(value="🚗")
+
+        ikon_frame = ctk.CTkFrame(pop, fg_color="transparent")
+        ikon_frame.pack()
+        ikon_buttons = {}
+
+        def select_ikon(ikon):
+            ikon_var.set(ikon)
+            for ico, btn in ikon_buttons.items():
+                btn.configure(fg_color="#3b82f6" if ico == ikon else "#f1f5f9",
+                              text_color="white"   if ico == ikon else "black")
+
+        for idx, ikon in enumerate(IKON_LISTA):
+            btn = ctk.CTkButton(ikon_frame, text=ikon, width=42, height=42,
+                                fg_color="#f1f5f9", text_color="black",
+                                font=("Arial", 20),
+                                command=lambda ic=ikon: select_ikon(ic))
+            btn.grid(row=idx // 7, column=idx % 7, padx=3, pady=3)
+            ikon_buttons[ikon] = btn
 
         if cid:
             with get_db() as conn:
                 r = conn.execute(
-                    "SELECT marka, tipus, rendszam, evjarat, km_allas, muszaki_lejarat, olaj_intervallum FROM autok WHERE id=?",
+                    "SELECT marka, tipus, rendszam, evjarat, km_allas, muszaki_lejarat, olaj_intervallum, COALESCE(ikon,'🚗') FROM autok WHERE id=?",
                     (cid,)
                 ).fetchone()
             for i, k in enumerate(keys):
                 entries[k].insert(0, str(r[i]) if r[i] is not None else "")
+            select_ikon(r[7])
         else:
             entries["olaj_intervallum"].insert(0,
                 str(self.config_manager.get("default_oil_interval", 10000)))
+            select_ikon("🚗")
 
         def save():
             v = [entries[k].get().strip() for k in keys]
@@ -1018,20 +1049,20 @@ class WheelBooK(ctk.CTk):
                 with get_db() as conn:
                     if cid:
                         conn.execute(
-                            "UPDATE autok SET marka=?, tipus=?, rendszam=?, evjarat=?, km_allas=?, muszaki_lejarat=?, olaj_intervallum=? WHERE id=?",
-                            (*v, cid)
+                            "UPDATE autok SET marka=?, tipus=?, rendszam=?, evjarat=?, km_allas=?, muszaki_lejarat=?, olaj_intervallum=?, ikon=? WHERE id=?",
+                            (*v, ikon_var.get(), cid)
                         )
                     else:
                         conn.execute(
-                            "INSERT INTO autok (marka, tipus, rendszam, evjarat, km_allas, muszaki_lejarat, olaj_intervallum) VALUES (?,?,?,?,?,?,?)",
-                            v
+                            "INSERT INTO autok (marka, tipus, rendszam, evjarat, km_allas, muszaki_lejarat, olaj_intervallum, ikon) VALUES (?,?,?,?,?,?,?,?)",
+                            (*v, ikon_var.get())
                         )
                 self.refresh_cars()
                 pop.destroy()
             except Exception as e:
                 messagebox.showerror("Hiba", f"Mentési hiba:\n{e}", parent=pop)
 
-        ctk.CTkButton(pop, text="Mentés", command=save, fg_color="#f97316").pack(pady=20)
+        ctk.CTkButton(pop, text="Mentés", command=save, fg_color="#f97316").pack(pady=15)
 
     # =========================================================================
     # Bejegyzés popup – Új (kategória szerint eltérő mezők)
