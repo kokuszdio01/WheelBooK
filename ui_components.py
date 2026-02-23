@@ -780,3 +780,76 @@ class CategoryManagerPanel(ctk.CTkToplevel):
         self._refresh_list()
         if self.on_change:
             self.on_change()
+
+
+# =============================================================================
+# UpdatePopup – frissítés értesítő ablak
+# =============================================================================
+
+class UpdatePopup(ctk.CTkToplevel):
+    """
+    Fél-automatikus frissítés popup.
+    Megjelenik ha új verzió elérhető – megkérdezi a felhasználót.
+    """
+
+    def __init__(self, parent, latest_version: str, changelog: str, install_callback):
+        super().__init__(parent)
+        self.install_cb = install_callback
+        self.title("🔄 Frissítés elérhető")
+        self.geometry("480x400")
+        self.attributes("-topmost", True)
+        self.grab_set()
+        self.resizable(False, False)
+        self._build(latest_version, changelog)
+
+    def _build(self, version: str, changelog: str):
+        # Fejléc
+        header = ctk.CTkFrame(self, fg_color="#3b82f6", corner_radius=0)
+        header.pack(fill="x")
+        ctk.CTkLabel(header, text=f"🔄  Elérhető: WheelBooK v{version}",
+                     font=("Arial", 16, "bold"),
+                     text_color="white").pack(pady=15, padx=20, anchor="w")
+
+        ctk.CTkLabel(self, text="Újdonságok ebben a verzióban:",
+                     font=("Arial", 12, "bold")).pack(anchor="w", padx=20, pady=(15, 5))
+
+        # Changelog szöveg
+        scroll = ctk.CTkScrollableFrame(self, fg_color="#f8fafc",
+                                         corner_radius=8, height=180)
+        scroll.pack(fill="x", padx=20)
+
+        for line in changelog.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("###"):
+                ctk.CTkLabel(scroll, text=line.replace("###", "").strip(),
+                             font=("Arial", 12, "bold"),
+                             text_color="#3b82f6").pack(anchor="w", pady=(6, 2), padx=5)
+            elif line.startswith("-"):
+                ctk.CTkLabel(scroll, text=line,
+                             font=("Arial", 11),
+                             wraplength=400, justify="left").pack(anchor="w", padx=10, pady=2)
+            else:
+                ctk.CTkLabel(scroll, text=line,
+                             font=("Arial", 11),
+                             text_color="gray").pack(anchor="w", padx=5)
+
+        ctk.CTkLabel(self,
+                     text="⚠️  A frissítés előtt a program automatikusan biztonsági mentést készít.",
+                     font=("Arial", 10), text_color="#64748b",
+                     wraplength=440).pack(padx=20, pady=(10, 5))
+
+        # Gombok
+        btn_f = ctk.CTkFrame(self, fg_color="transparent")
+        btn_f.pack(pady=15)
+
+        ctk.CTkButton(btn_f, text="⬇️  Telepítés most", fg_color="#10b981",
+                      width=160, font=("Arial", 13, "bold"),
+                      command=self._install).pack(side="left", padx=10)
+        ctk.CTkButton(btn_f, text="Később", fg_color="#64748b",
+                      width=100, command=self.destroy).pack(side="left", padx=10)
+
+    def _install(self):
+        self.destroy()
+        self.install_cb()

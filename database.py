@@ -8,6 +8,7 @@ DEFAULT_KATEGORIAK = [
     ("Tankolás",       "⛽", "#3b82f6", 1),
     ("Karbantartás",   "🔧", "#10b981", 1),
     ("Egyéb",          "📦", "#f97316", 1),
+    ("Biztosítás",     "🛡️", "#8b5cf6", 1),
 ]
 
 def init_db(db_path):
@@ -56,8 +57,24 @@ def init_db(db_path):
         )
     """)
 
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS biztositas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            auto_id INTEGER NOT NULL,
+            datum TEXT NOT NULL,
+            osszeg REAL DEFAULT 0,
+            biztosito TEXT,
+            kezdete TEXT,
+            vege TEXT,
+            megjegyzes TEXT,
+            kep_utvonal TEXT DEFAULT '',
+            FOREIGN KEY (auto_id) REFERENCES autok (id) ON DELETE CASCADE
+        )
+    """)
+
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_szerviz_auto_id ON szerviz_adatok (auto_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_szerviz_datum ON szerviz_adatok (datum)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_biztositas_auto_id ON biztositas (auto_id)")
 
     conn.commit()
     _migrate_db(cursor, conn)
@@ -70,6 +87,17 @@ def init_db(db_path):
             DEFAULT_KATEGORIAK
         )
         conn.commit()
+    else:
+        # Biztosítás hozzáadása ha még nincs (meglévő adatbázisnál)
+        biz = cursor.execute(
+            "SELECT id FROM kategoriak WHERE nev='Biztosítás'"
+        ).fetchone()
+        if not biz:
+            cursor.execute(
+                "INSERT INTO kategoriak (nev, ikon, szin, alap) VALUES (?,?,?,?)",
+                ("Biztosítás", "🛡️", "#8b5cf6", 1)
+            )
+            conn.commit()
 
     conn.close()
 

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 main.py – WheelBooK
 Autó nyilvántartó program.
@@ -7,13 +8,16 @@ Funkciók: Tankolás, Karbantartás, Egyéb, Statisztika,
 
 import customtkinter as ctk
 import sqlite3
+import sys
 import os
 import csv
 import shutil
 import logging
 from tkinter import filedialog, messagebox
+from updater import UpdateChecker, CURRENT_VERSION
 from ui_components import (InfoCard, DataRow, SearchFilterBar, ReminderPopup,
-                           BackupPanel, SettingsPanel, ChangelogPopup, CategoryManagerPanel)
+                           BackupPanel, SettingsPanel, ChangelogPopup,
+                           CategoryManagerPanel, UpdatePopup)
 from database import init_db
 from config import ConfigManager
 from backup_manager import BackupManager
@@ -32,10 +36,24 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "auto_naplo.db")
-UPLOAD_DIR = os.path.join(BASE_DIR, "csatolmanyok")
-CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
-CHANGELOG_PATH = os.path.join(BASE_DIR, "CHANGELOG.md")
+
+# PyInstaller frozen exe esetén Program Files-ba nincs írási jog
+# Ezért az adatok a Dokumentumok/WheelBooK mappába kerülnek
+if getattr(sys, 'frozen', False):
+    # Telepített mód: Dokumentumok/WheelBooK
+    EXE_DIR = os.path.dirname(sys.executable)
+    DATA_DIR = os.path.join(os.path.expanduser("~"), "Documents", "WheelBooK")
+else:
+    # Fejlesztői mód: a .py fájl melletti adatok mappa
+    EXE_DIR = BASE_DIR
+    DATA_DIR = os.path.join(BASE_DIR, "adatok")
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+DB_PATH = os.path.join(DATA_DIR, "auto_naplo.db")
+UPLOAD_DIR = os.path.join(DATA_DIR, "csatolmanyok")
+CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
+CHANGELOG_PATH = os.path.join(EXE_DIR, "CHANGELOG.md")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -54,10 +72,11 @@ class WheelBooK(ctk.CTk):
 
         # Managerek inicializálása
         self.backup_manager = BackupManager(
-            BASE_DIR, DB_PATH,
+            DATA_DIR, DB_PATH,
             backup_keep_days=self.config_manager.get("backup_keep_days", 30)
         )
         self.reminder_manager = ReminderManager(DB_PATH, self.config_manager)
+        self.update_checker = UpdateChecker(EXE_DIR, self._on_update_available)
 
         self.selected_car_id = None
         self.temp_image_path = None
@@ -68,7 +87,7 @@ class WheelBooK(ctk.CTk):
         mode = self.config_manager.get("appearance_mode", "light")
         ctk.set_appearance_mode(mode)
 
-        self.title("WheelBooK v9.0 - Dokumentum Kezelő")
+        self.title(f"WheelBooK v{CURRENT_VERSION} - Dokumentum Kezelő")
         self.geometry("1200x950")
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.configure(fg_color="#f8fafc")
@@ -93,6 +112,9 @@ class WheelBooK(ctk.CTk):
 
         # Changelog megjelenítése ha új verzió
         self.after(200, lambda: ChangelogPopup(self, self.config_manager, CHANGELOG_PATH))
+
+        # Frissítés keresése a háttérben (3mp késleltetéssel, hogy az UI betöltődjön)
+        self.after(3000, self.update_checker.check_async)
 
     def on_closing(self):
         plt.close('all')
@@ -151,7 +173,7 @@ class WheelBooK(ctk.CTk):
                                    segmented_button_selected_color="#3b82f6")
         self.tabs.pack(fill="both", expand=True)
 
-        # Alap fülek
+        # Alap fülek (Biztosítás saját fület kap)
         for tab_name, kat, import_fn in [
             ("⛽ Tankolások",  "Tankolás",    self.import_fuel),
             ("🔧 Karbantartás","Karbantartás", self.import_maintenance),
@@ -160,13 +182,19 @@ class WheelBooK(ctk.CTk):
             tab = self.tabs.add(tab_name)
             self._setup_tab_content(tab, kat, import_fn)
 
-        # Egyedi kategória fülek
+        # Biztosítás fix fül
+        tab_biz = self.tabs.add("🛡️ Biztosítás")
+        self._setup_biztositas_tab(tab_biz)
+
+        # Egyedi kategória fülek (Biztosítás kihagyva – már van saját füle)
         with get_db() as conn:
             custom_cats = conn.execute(
                 "SELECT nev, ikon FROM kategoriak WHERE alap=0 ORDER BY id ASC"
             ).fetchall()
 
         for nev, ikon in custom_cats:
+            if nev == "Biztosítás":
+                continue
             tab_label = f"{ikon} {nev}"
             tab = self.tabs.add(tab_label)
             self._setup_tab_content(tab, nev, None)
@@ -179,6 +207,116 @@ class WheelBooK(ctk.CTk):
         tab_eves = self.tabs.add("📅 Éves összesítő")
         self.eves_scroll = ctk.CTkScrollableFrame(tab_eves, fg_color="transparent")
         self.eves_scroll.pack(fill="both", expand=True)
+
+    def _setup_biztositas_tab(self, tab):
+        """Biztosítás fül felépítése."""
+        bar = ctk.CTkFrame(tab, fg_color="transparent")
+        bar.pack(fill="x", padx=10, pady=10)
+        ctk.CTkButton(bar, text="+ Új biztosítás", fg_color="#8b5cf6",
+                      command=self.open_biztositas_popup).pack(side="left", padx=5)
+
+        self.biz_scroll = ctk.CTkScrollableFrame(tab, fg_color="transparent")
+        self.biz_scroll.pack(fill="both", expand=True)
+
+    def _refresh_biztositas_tab(self):
+        if not hasattr(self, "biz_scroll"):
+            return
+        for w in self.biz_scroll.winfo_children():
+            w.destroy()
+
+        if not self.selected_car_id:
+            return
+
+        with get_db() as conn:
+            rows = conn.execute("""
+                SELECT id, datum, biztosito, kezdete, vege, osszeg, megjegyzes, kep_utvonal
+                FROM biztositas WHERE auto_id=? ORDER BY vege DESC
+            """, (self.selected_car_id,)).fetchall()
+
+        if not rows:
+            ctk.CTkLabel(self.biz_scroll, text="Nincs biztosítási bejegyzés.",
+                         text_color="gray", font=("Arial", 13)).pack(pady=30)
+            return
+
+        today = datetime.now().date()
+        for row in rows:
+            rid, datum, biztosito, kezdete, vege, osszeg, megj, kep = row
+
+            # Lejárat státusz
+            try:
+                vege_date = datetime.strptime(vege, "%Y.%m.%d").date()
+                napok = (vege_date - today).days
+                if napok < 0:
+                    statuscolor = "#ef4444"
+                    status = f"⚠️ Lejárt {abs(napok)} napja"
+                elif napok <= 30:
+                    statuscolor = "#f97316"
+                    status = f"⚠️ {napok} nap múlva jár le"
+                else:
+                    statuscolor = "#10b981"
+                    status = f"✅ Érvényes ({napok} nap)"
+            except Exception:
+                statuscolor = "#64748b"
+                status = "Ismeretlen lejárat"
+
+            card = ctk.CTkFrame(self.biz_scroll, fg_color="white",
+                                corner_radius=10, border_width=1, border_color="#e2e8f0")
+            card.pack(fill="x", padx=10, pady=5)
+
+            top = ctk.CTkFrame(card, fg_color="transparent")
+            top.pack(fill="x", padx=12, pady=(10, 4))
+
+            ctk.CTkLabel(top, text=f"🛡️ {biztosito or 'Ismeretlen biztosító'}",
+                         font=("Arial", 14, "bold")).pack(side="left")
+            ctk.CTkLabel(top, text=f"{osszeg:,.0f} Ft".replace(",", " "),
+                         font=("Arial", 14, "bold"),
+                         text_color="#8b5cf6").pack(side="right")
+
+            mid = ctk.CTkFrame(card, fg_color="transparent")
+            mid.pack(fill="x", padx=12, pady=2)
+            ctk.CTkLabel(mid, text=f"📅 {kezdete or '?'} → {vege or '?'}",
+                         font=("Arial", 12)).pack(side="left")
+            ctk.CTkLabel(mid, text=status, font=("Arial", 11),
+                         text_color=statuscolor).pack(side="right")
+
+            if megj:
+                ctk.CTkLabel(card, text=f"💬 {megj}", font=("Arial", 11),
+                             text_color="gray").pack(anchor="w", padx=12, pady=(0, 4))
+
+            btn_f = ctk.CTkFrame(card, fg_color="transparent")
+            btn_f.pack(anchor="e", padx=12, pady=(0, 8))
+
+            if kep:
+                full_path = os.path.join(UPLOAD_DIR, os.path.basename(kep))
+                ctk.CTkButton(btn_f, text="📷", width=30, height=28,
+                              fg_color="#f1f5f9", text_color="#10b981",
+                              command=lambda p=full_path: self._open_file(p)).pack(side="left", padx=2)
+
+            ctk.CTkButton(btn_f, text="📝", width=30, height=28,
+                          fg_color="#f1f5f9", text_color="#3b82f6",
+                          command=lambda i=rid: self._edit_biztositas(i)).pack(side="left", padx=2)
+            ctk.CTkButton(btn_f, text="🗑", width=30, height=28,
+                          fg_color="#f1f5f9", text_color="#ef4444",
+                          command=lambda i=rid: self._delete_biztositas(i)).pack(side="left", padx=2)
+
+    def _edit_biztositas(self, eid: int):
+        with get_db() as conn:
+            r = conn.execute(
+                "SELECT datum, osszeg, biztosito, kezdete, vege, megjegyzes FROM biztositas WHERE id=?",
+                (eid,)
+            ).fetchone()
+        if not r:
+            return
+        prefill = {"datum": r[0], "osszeg": r[1], "biztosito": r[2],
+                   "kezdete": r[3], "vege": r[4], "megj": r[5]}
+        self.open_biztositas_popup(eid=eid, prefill=prefill)
+
+    def _delete_biztositas(self, eid: int):
+        if not messagebox.askyesno("Törlés", "Biztosan törlöd ezt a biztosítási bejegyzést?"):
+            return
+        with get_db() as conn:
+            conn.execute("DELETE FROM biztositas WHERE id=?", (eid,))
+        self.refresh_data()
 
     def _setup_tab_content(self, tab, kat: str, import_cmd):
         """Egy fül tartalmának felépítése (lista + szűrő + gombok)."""
@@ -220,6 +358,48 @@ class WheelBooK(ctk.CTk):
         )
         self.on_closing()
 
+    def _on_update_available(self, latest_version: str, changelog: str):
+        """Háttérszálból hívódik – tkinter after()-rel vissza a UI szálra."""
+        self.after(0, lambda: UpdatePopup(
+            self, latest_version, changelog,
+            install_callback=self._do_install
+        ))
+
+    def _do_install(self):
+        """Letölti és telepíti a frissítést, majd értesíti a felhasználót."""
+        # Haladásjelző popup
+        prog = ctk.CTkToplevel(self)
+        prog.title("Frissítés folyamatban...")
+        prog.geometry("360x140")
+        prog.attributes("-topmost", True)
+        prog.grab_set()
+        prog.resizable(False, False)
+        ctk.CTkLabel(prog, text="⬇️  Frissítés letöltése...",
+                     font=("Arial", 14, "bold")).pack(pady=(25, 10))
+        bar = ctk.CTkProgressBar(prog, width=300)
+        bar.pack()
+        bar.set(0)
+        prog.update()
+
+        def run():
+            def progress(pct):
+                self.after(0, lambda p=pct: bar.set(p / 100))
+            ok, msg = self.update_checker.download_and_install(progress_callback=progress)
+            self.after(0, lambda: _done(ok, msg))
+
+        def _done(ok: bool, msg: str):
+            prog.destroy()
+            if ok:
+                messagebox.showinfo(
+                    "✅ Frissítés kész",
+                    f"{msg}\n\nZárd be és nyisd meg újra a WheelBooK-ot!"
+                )
+            else:
+                messagebox.showerror("❌ Frissítési hiba", msg)
+
+        import threading
+        threading.Thread(target=run, daemon=True).start()
+
     def _rebuild_tabs_and_refresh(self):
         """Kategória változáskor újraépíti a tabokat és frissíti az adatokat."""
         self._build_tabs()
@@ -255,9 +435,9 @@ class WheelBooK(ctk.CTk):
     def refresh_data(self):
         if not self.selected_car_id:
             return
-        # Minden kategória fülét frissítjük
         for kat in list(self.tab_lists.keys()):
             self._refresh_tab(kat)
+        self._refresh_biztositas_tab()
         self.update_statistics()
         self.update_yearly_stats()
 
@@ -384,7 +564,39 @@ class WheelBooK(ctk.CTk):
             ).pack(side="right", padx=(10, 0))
 
         # Műszaki vizsga sor
-        ctk.CTkLabel(rem_f, text=f"• Műszaki vizsga lejárata: {vizsga}").pack(anchor="w", padx=25, pady=(0, 10))
+        ctk.CTkLabel(rem_f, text=f"• Műszaki vizsga lejárata: {vizsga}").pack(anchor="w", padx=25, pady=(0, 5))
+
+        # Biztosítási emlékeztető
+        with get_db() as conn:
+            biz_row = conn.execute("""
+                SELECT biztosito, vege FROM biztositas
+                WHERE auto_id=? AND vege IS NOT NULL
+                ORDER BY vege DESC LIMIT 1
+            """, (self.selected_car_id,)).fetchone()
+
+        if biz_row:
+            biztosito, vege_str = biz_row
+            try:
+                vege_date = datetime.strptime(vege_str, "%Y.%m.%d").date()
+                napok = (vege_date - datetime.now().date()).days
+                if napok < 0:
+                    biz_txt = f"🔴 BIZTOSÍTÁS LEJÁRT! ({abs(napok)} napja) – {biztosito or ''}"
+                    biz_clr = "#e11d48"
+                elif napok <= 30:
+                    biz_txt = f"🟡 Biztosítás hamarosan lejár: {napok} nap múlva ({vege_str}) – {biztosito or ''}"
+                    biz_clr = "#f59e0b"
+                else:
+                    biz_txt = f"✅ Biztosítás érvényes: {vege_str}-ig ({napok} nap) – {biztosito or ''}"
+                    biz_clr = "#10b981"
+            except Exception:
+                biz_txt = f"• Biztosítás lejárata: {vege_str}"
+                biz_clr = "#64748b"
+        else:
+            biz_txt = "Nincs biztosítási adat rögzítve."
+            biz_clr = "#64748b"
+
+        ctk.CTkLabel(rem_f, text=f"• {biz_txt}",
+                     text_color=biz_clr).pack(anchor="w", padx=25, pady=(0, 10))
 
         # Statisztika kártyák
         tank_sum = sum(r[1] for r in t_data)
@@ -822,140 +1034,114 @@ class WheelBooK(ctk.CTk):
         ctk.CTkButton(pop, text="Mentés", command=save, fg_color="#f97316").pack(pady=20)
 
     # =========================================================================
-    # Bejegyzés popup – Új
+    # Bejegyzés popup – Új (kategória szerint eltérő mezők)
     # =========================================================================
 
     def open_entry_popup(self, kat, prefill: dict = None):
-        """
-        Új bejegyzés popup.
-        kat: kezdő kategória
-        prefill: dict előtöltött adatokkal (másolásnál használjuk)
-        """
+        """Új bejegyzés popup – kategória szerint eltérő mezőkkel."""
         if not self.selected_car_id:
             messagebox.showwarning("Hiba", "Először válassz ki egy járművet!")
             return
 
+        # Biztosítás saját popupot kap
+        if kat == "Biztosítás":
+            self.open_biztositas_popup(prefill=prefill)
+            return
+
         self.temp_image_path = None
         pop = ctk.CTkToplevel(self)
-        pop.title(f"Új bejegyzés")
-        pop.geometry("420x780")
+        pop.title(f"Új {kat}")
         pop.attributes("-topmost", True)
         pop.grab_set()
 
-        # Kategória választó dropdown az összes elérhető kategóriából
-        with get_db() as conn:
-            kat_lista = [r[0] for r in conn.execute(
-                "SELECT nev FROM kategoriak ORDER BY alap DESC, id ASC"
-            ).fetchall()]
-        if not kat_lista:
-            kat_lista = ["Tankolás", "Karbantartás", "Egyéb"]
+        def _field(label, val=""):
+            ctk.CTkLabel(pop, text=label).pack()
+            e = ctk.CTkEntry(pop, width=280)
+            e.pack(pady=(0, 4))
+            if val:
+                e.insert(0, str(val))
+            return e
 
-        ctk.CTkLabel(pop, text="Kategória").pack()
-        kat_var = ctk.StringVar(value=prefill.get("kat", kat) if prefill else kat)
-        kat_menu = ctk.CTkOptionMenu(pop, variable=kat_var, values=kat_lista, width=280)
-        kat_menu.pack()
-
-        ctk.CTkLabel(pop, text="Dátum (ÉÉÉÉ.HH.NN)").pack()
-        e_datum = ctk.CTkEntry(pop, width=280)
-        e_datum.pack()
-        e_datum.insert(0, prefill.get("datum", datetime.now().strftime("%Y.%m.%d")) if prefill else datetime.now().strftime("%Y.%m.%d"))
-
-        def _auto_format_date(event, entry):
+        def _auto_fmt(event, entry):
             val = entry.get().replace(".", "").replace("-", "").strip()
             if len(val) == 8 and val.isdigit():
                 entry.delete(0, "end")
                 entry.insert(0, f"{val[:4]}.{val[4:6]}.{val[6:]}")
-        e_datum.bind("<FocusOut>", lambda e: _auto_format_date(e, e_datum))
-        e_datum.bind("<Return>", lambda e: _auto_format_date(e, e_datum))
 
-        ctk.CTkLabel(pop, text="KM állás").pack()
-        e_km = ctk.CTkEntry(pop, width=280)
-        e_km.pack()
-        # Másolásnál km-t szándékosan üresen hagyjuk
+        e_datum = _field("Dátum (ÉÉÉÉ.HH.NN)",
+                         prefill.get("datum", datetime.now().strftime("%Y.%m.%d")) if prefill
+                         else datetime.now().strftime("%Y.%m.%d"))
+        e_datum.bind("<FocusOut>", lambda e: _auto_fmt(e, e_datum))
+        e_datum.bind("<Return>",   lambda e: _auto_fmt(e, e_datum))
 
-        ctk.CTkLabel(pop, text="Liter").pack()
-        e_liter = ctk.CTkEntry(pop, width=280)
-        e_liter.pack()
-        if prefill and prefill.get("liter"):
-            e_liter.insert(0, str(prefill["liter"]))
+        # KM csak Tankolásnál és Karbantartásnál
+        e_km = None
+        if kat in ("Tankolás", "Karbantartás"):
+            e_km = _field("KM állás")
 
-        ctk.CTkLabel(pop, text="Ft/L").pack()
-        e_ar = ctk.CTkEntry(pop, width=280)
-        e_ar.pack()
-        if prefill and prefill.get("ar_l"):
-            e_ar.insert(0, str(prefill["ar_l"]))
+        # Liter + Ft/L csak Tankolásnál
+        e_liter = e_ar = None
+        if kat == "Tankolás":
+            e_liter = _field("Liter", prefill.get("liter", "") if prefill else "")
+            e_ar    = _field("Ft/L",  prefill.get("ar_l",  "") if prefill else "")
 
-        ctk.CTkLabel(pop, text="Összeg (Ft)").pack()
-        e_sum = ctk.CTkEntry(pop, width=280)
-        e_sum.pack()
-        if prefill and prefill.get("osszeg"):
-            e_sum.insert(0, str(prefill["osszeg"]))
+        e_sum = _field("Összeg (Ft)", prefill.get("osszeg", "") if prefill else "")
 
-        ctk.CTkLabel(pop, text="Helyszín").pack()
-        e_hely = ctk.CTkEntry(pop, width=280)
-        e_hely.pack()
-        if prefill and prefill.get("hely"):
-            e_hely.insert(0, str(prefill["hely"]))
+        # Helyszín Tankolásnál és Karbantartásnál
+        e_hely = None
+        if kat in ("Tankolás", "Karbantartás"):
+            e_hely = _field("Helyszín", prefill.get("hely", "") if prefill else "")
 
-        # Tankológép – liter × Ft/L → összeg
-        def _auto_calc(*_):
-            try:
-                l = float(e_liter.get().replace(",", ".").replace(" ", ""))
-                ar = float(e_ar.get().replace(",", ".").replace(" ", ""))
-                e_sum.delete(0, "end")
-                e_sum.insert(0, str(round(l * ar)))
-            except ValueError:
-                pass
-        e_liter.bind("<KeyRelease>", _auto_calc)
-        e_ar.bind("<KeyRelease>", _auto_calc)
-        ctk.CTkLabel(pop, text="💡 Liter × Ft/L = Összeg (automatikus)",
-                     font=("Arial", 10), text_color="#64748b").pack()
+        # Tankológép
+        if kat == "Tankolás" and e_liter and e_ar:
+            def _auto_calc(*_):
+                try:
+                    l  = float(e_liter.get().replace(",", ".").replace(" ", ""))
+                    ar = float(e_ar.get().replace(",",   ".").replace(" ", ""))
+                    e_sum.delete(0, "end")
+                    e_sum.insert(0, str(round(l * ar)))
+                except ValueError:
+                    pass
+            e_liter.bind("<KeyRelease>", _auto_calc)
+            e_ar.bind("<KeyRelease>",    _auto_calc)
+            ctk.CTkLabel(pop, text="💡 Liter × Ft/L = Összeg (automatikus)",
+                         font=("Arial", 10), text_color="#64748b").pack()
 
         ctk.CTkLabel(pop, text="Megjegyzés").pack()
-        txt = ctk.CTkTextbox(pop, width=280, height=70)
-        txt.pack()
+        txt = ctk.CTkTextbox(pop, width=280, height=60)
+        txt.pack(pady=(0, 4))
         if prefill and prefill.get("megj"):
             txt.insert("1.0", str(prefill["megj"]))
 
         lbl_img = ctk.CTkLabel(pop, text="Nincs kép csatolva", text_color="gray")
-        lbl_img.pack(pady=4)
+        lbl_img.pack(pady=2)
 
         def attach():
             f = filedialog.askopenfilename(
                 filetypes=[("Képek és PDF", "*.jpg *.png *.jpeg *.pdf")], parent=pop)
             if f:
                 self.temp_image_path = f
-                lbl_img.configure(text=f"Csatolva: {os.path.basename(f)}", text_color="#10b981")
+                lbl_img.configure(text=f"Csatolva: {os.path.basename(f)}",
+                                  text_color="#10b981")
 
         ctk.CTkButton(pop, text="📷 Kép/Számla csatolása", fg_color="#64748b",
                       command=attach).pack(pady=4)
 
         def save():
-            final_img_path = self._copy_attachment(self.temp_image_path) if self.temp_image_path else ""
+            final_img = self._copy_attachment(self.temp_image_path) if self.temp_image_path else ""
             try:
-                def to_float(e):
-                    v = e.get().strip().replace(" ", "")
-                    return float(v) if v else None
-
-                def to_int(e):
-                    v = e.get().strip().replace(" ", "")
-                    return int(float(v)) if v else None
-
-                def to_str(e):
-                    v = e.get().strip()
-                    return v if v else None
+                def tf(e): v = e.get().strip().replace(" ","") if e else ""; return float(v) if v else None
+                def ti(e): v = e.get().strip().replace(" ","") if e else ""; return int(float(v)) if v else None
+                def ts(e): v = e.get().strip() if e else ""; return v or None
 
                 datum = e_datum.get().strip()
                 if not datum:
                     messagebox.showwarning("Hiba", "A dátum megadása kötelező!", parent=pop)
                     return
-                osszeg = to_float(e_sum)
+                osszeg = tf(e_sum)
                 if osszeg is None:
                     messagebox.showwarning("Hiba", "Az összeg megadása kötelező!", parent=pop)
                     return
-
-                uj_km = to_int(e_km)
-                valasztott_kat = kat_var.get()
 
                 with get_db() as conn:
                     conn.execute("""
@@ -964,21 +1150,130 @@ class WheelBooK(ctk.CTk):
                          osszeg, benzinkut, megjegyzes, kategoria, kep_utvonal)
                         VALUES (?,?,?,?,?,?,?,?,?,?)
                     """, (
-                        self.selected_car_id, datum, uj_km,
-                        to_float(e_liter), to_float(e_ar), osszeg,
-                        to_str(e_hely),
+                        self.selected_car_id, datum,
+                        ti(e_km), tf(e_liter), tf(e_ar), osszeg,
+                        ts(e_hely),
                         txt.get("1.0", "end-1c").strip() or None,
-                        valasztott_kat, final_img_path
+                        kat, final_img
                     ))
                     self._sync_car_km(conn, self.selected_car_id)
 
                 self.refresh_data()
                 pop.destroy()
-            except Exception as e:
-                messagebox.showerror("Hiba", f"Mentési hiba:\n{e}", parent=pop)
+            except Exception as ex:
+                messagebox.showerror("Hiba", f"Mentési hiba:\n{ex}", parent=pop)
 
         ctk.CTkButton(pop, text="Mentés", fg_color="#10b981",
-                      command=save).pack(pady=12)
+                      command=save).pack(pady=10)
+
+        # Ablak mérete a tartalom alapján
+        pop.update_idletasks()
+        pop.geometry(f"380x{min(pop.winfo_reqheight() + 30, 700)}")
+
+    # =========================================================================
+    # Biztosítás popup
+    # =========================================================================
+
+    def open_biztositas_popup(self, eid=None, prefill: dict = None):
+        """Biztosítás bejegyzés popup – saját mezőkkel."""
+        if not self.selected_car_id:
+            messagebox.showwarning("Hiba", "Először válassz ki egy járművet!")
+            return
+
+        self.temp_image_path = None
+        pop = ctk.CTkToplevel(self)
+        pop.title("Biztosítás szerkesztése" if eid else "Új biztosítás")
+        pop.geometry("400x580")
+        pop.attributes("-topmost", True)
+        pop.grab_set()
+
+        def _field(label, val=""):
+            ctk.CTkLabel(pop, text=label).pack()
+            e = ctk.CTkEntry(pop, width=280)
+            e.pack(pady=(0, 4))
+            if val:
+                e.insert(0, str(val))
+            return e
+
+        def _auto_fmt(event, entry):
+            val = entry.get().replace(".", "").replace("-", "").strip()
+            if len(val) == 8 and val.isdigit():
+                entry.delete(0, "end")
+                entry.insert(0, f"{val[:4]}.{val[4:6]}.{val[6:]}")
+
+        today = datetime.now().strftime("%Y.%m.%d")
+        p = prefill or {}
+
+        e_datum     = _field("Felvitel dátuma", p.get("datum", today))
+        e_biztosito = _field("Biztosító neve",  p.get("biztosito", ""))
+        e_kezdete   = _field("Biztosítás kezdete (ÉÉÉÉ.HH.NN)", p.get("kezdete", ""))
+        e_vege      = _field("Biztosítás vége (ÉÉÉÉ.HH.NN)",    p.get("vege", ""))
+        e_osszeg    = _field("Összeg (Ft)",      p.get("osszeg", ""))
+
+        for e in [e_datum, e_kezdete, e_vege]:
+            e.bind("<FocusOut>", lambda ev, en=e: _auto_fmt(ev, en))
+            e.bind("<Return>",   lambda ev, en=e: _auto_fmt(ev, en))
+
+        ctk.CTkLabel(pop, text="Megjegyzés").pack()
+        txt = ctk.CTkTextbox(pop, width=280, height=60)
+        txt.pack(pady=(0, 4))
+        if p.get("megj"):
+            txt.insert("1.0", str(p["megj"]))
+
+        lbl_img = ctk.CTkLabel(pop, text="Nincs kép csatolva", text_color="gray")
+        lbl_img.pack(pady=2)
+
+        def attach():
+            f = filedialog.askopenfilename(
+                filetypes=[("Képek és PDF", "*.jpg *.png *.jpeg *.pdf")], parent=pop)
+            if f:
+                self.temp_image_path = f
+                lbl_img.configure(text=f"Csatolva: {os.path.basename(f)}",
+                                  text_color="#10b981")
+
+        ctk.CTkButton(pop, text="📷 Kötvény csatolása", fg_color="#64748b",
+                      command=attach).pack(pady=4)
+
+        def save():
+            final_img = self._copy_attachment(self.temp_image_path) if self.temp_image_path else ""
+            try:
+                datum     = e_datum.get().strip()
+                biztosito = e_biztosito.get().strip() or None
+                kezdete   = e_kezdete.get().strip() or None
+                vege      = e_vege.get().strip() or None
+                megj      = txt.get("1.0", "end-1c").strip() or None
+                v_osszeg  = e_osszeg.get().strip().replace(" ", "")
+                osszeg    = float(v_osszeg) if v_osszeg else 0.0
+
+                if not datum:
+                    messagebox.showwarning("Hiba", "A dátum megadása kötelező!", parent=pop)
+                    return
+                if not vege:
+                    messagebox.showwarning("Hiba", "A lejárat dátuma kötelező!", parent=pop)
+                    return
+
+                with get_db() as conn:
+                    if eid:
+                        conn.execute("""
+                            UPDATE biztositas SET datum=?, osszeg=?, biztosito=?,
+                            kezdete=?, vege=?, megjegyzes=?, kep_utvonal=?
+                            WHERE id=?
+                        """, (datum, osszeg, biztosito, kezdete, vege, megj, final_img, eid))
+                    else:
+                        conn.execute("""
+                            INSERT INTO biztositas
+                            (auto_id, datum, osszeg, biztosito, kezdete, vege, megjegyzes, kep_utvonal)
+                            VALUES (?,?,?,?,?,?,?,?)
+                        """, (self.selected_car_id, datum, osszeg,
+                              biztosito, kezdete, vege, megj, final_img))
+
+                self.refresh_data()
+                pop.destroy()
+            except Exception as ex:
+                messagebox.showerror("Hiba", f"Mentési hiba:\n{ex}", parent=pop)
+
+        ctk.CTkButton(pop, text="Mentés", fg_color="#8b5cf6",
+                      command=save).pack(pady=10)
 
     # =========================================================================
     # Bejegyzés popup – Szerkesztés
